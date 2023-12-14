@@ -128,8 +128,8 @@ function start_ci(machine) {
 
         clearDocument();
         loadHTML("html/navbar.html");
+		$('#download_key_button').removeAttr("style");
         loadJS("js/navbar.js");
-        navbarHover();
         loginBtn();
 
 	// We request a test node to the gateway
@@ -187,6 +187,8 @@ function run_ci(servername, RemainingSecond) {
 	$('#features').css("display","none");
 	$('#help').css("display","none");
 	$('#dropdown').css("display","none");
+	$('#download_key_button').css("display","none");
+
 
 
 	// We must add an input field into the navbar to gather the github Token entry
@@ -369,7 +371,7 @@ function run_ci(servername, RemainingSecond) {
 						$("#EndSession").css("display","none");
 						$("#modalSession").modal('hide');
 						$('#modalSession').on('hidden.bs.modal', function (e) {
-							main();
+							mainpage();
 						});
                                         }
                                 });
@@ -871,7 +873,6 @@ function myAccount()
 	clearDocument();
 	loadHTML("html/navbar.html");
         loadJS("js/navbar.js");
-	navbarHover();
 	loginBtn();
 
 	// We must put in place the layout here and allow various entries to be available
@@ -888,6 +889,9 @@ function myAccount()
 
 function logged()
 {
+	if (typeof(mylocalStorage['privKeyInfoAck'] == 'undefined')) {
+		mylocalStorage['privKeyInfoAck'] = 0;
+	}
 	mainpage();
 }
 
@@ -909,21 +913,64 @@ function disconnect()
 	delete mylocalStorage['secretKey'];
 	delete mylocalStorage['username'];
 	delete mylocalStorage['osfciauth'];
+	delete mylocalStorage['privKeyInfoAck'];
 	localStorage.clear()
 	// Wait 5s and redirect to mainpage
 	setTimeout(function () {
-		mainpage();
+		main();
     	}, 5000);
+}
+
+function createCookie(name, value, days) {
+    var expires;
+
+    if (days) {
+        var date = new Date();
+        date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+        expires = "; expires=" + date.toGMTString();
+    } else {
+        expires = "";
+    }
+    document.cookie = encodeURIComponent(name) + "=" + encodeURIComponent(value) + expires + "; path=/";
+}
+
+function readCookie(name) {
+    var nameEQ = encodeURIComponent(name) + "=";
+    var ca = document.cookie.split(';');
+    for (var i = 0; i < ca.length; i++) {
+        var c = ca[i];
+        while (c.charAt(0) === ' ')
+            c = c.substring(1, c.length);
+        if (c.indexOf(nameEQ) === 0)
+            return decodeURIComponent(c.substring(nameEQ.length, c.length));
+    }
+    return null;
+}
+
+function eraseCookie(name) {
+    createCookie(name, "", -1);
 }
 
 function mainpage(){
 	clearDocument();
 	// Must load the default home page
 	loadHTML("html/navbar.html");
+	$('#download_key_button').removeAttr("style");
 	loadJS("js/navbar.js");
-	navbarHover();
+	// pretty rudimentary I should probably keep this within the popUp function itself eventually
+	AckCookieName = "priv_key_ack"
+	if (( "string" === typeof(mylocalStorage['secretKey']) ) & ( "string" === typeof(mylocalStorage['accessKey']) ))
+	{
+		AckCookieName = AckCookieName + "_username_" + mylocalStorage['username']
+	}
+	
+	if (readCookie(AckCookieName) != 1) {
+		popUp()
+	}
+	
 	loginBtn();
 	loadHTML("html/home.html");
+
 	$('#background').css('background-image', 'url(images/landing.png)').fadeIn(3000);
         $(document).ready(function () {
                     $('#background').animate({ opacity: 1 }, { duration: 2000 });
@@ -959,7 +1006,6 @@ function main(){
 		clearDocument();
 		loadHTML("html/navbar.html");
 		loadJS("js/navbar.js");
-		navbarHover();
 		loginBtn();
                 $(document.body).append("<center><h1>Welcome Back !</h1></center>");
 		loadHTML("html/loginForm.html");
@@ -984,7 +1030,6 @@ function main(){
 			clearDocument();
                         loadHTML("html/navbar.html");
                         loadJS("js/navbar.js");
-                        navbarHover();
                         loginBtn();
                         $(document.body).append("<center><h1>Welcome Back !</h1><center>");
                         loadHTML("html/resetPassword.html");
@@ -1017,7 +1062,6 @@ function main(){
 			clearDocument();
 			loadHTML("html/navbar.html");
 			loadJS("js/navbar.js");
-			navbarHover();
 			loginBtn();
 			loadHTML("html/home.html");
 			$('#background').css('background-image', 'url(images/landing.png)').fadeIn(3000);

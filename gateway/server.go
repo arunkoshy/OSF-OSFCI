@@ -11,8 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/viper"
-	"golang.org/x/crypto/acme/autocert"
 	"html/template"
 	"io/ioutil"
 	"net"
@@ -20,35 +18,36 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
 var tlsCertPath string
 var tlsKeyPath string
 
-//DNSDomain is read from config
+// DNSDomain is read from config
 var DNSDomain string
 var staticAssetsDir string
 
-//TTYDTestConsole is read from config
+// TTYDTestConsole is read from config
 var TTYDTestConsole string
 
-//TTYDHostConsole is read from config
+// TTYDHostConsole is read from config
 var TTYDHostConsole string
 
-//TTYDem100Bios is read from config
+// TTYDem100Bios is read from config
 var TTYDem100Bios string
 
-//TTYDem100BMC is read from config
+// TTYDem100BMC is read from config
 var TTYDem100BMC string
 
 // TTYDOSLoader is read from config
 var TTYDOSLoader string
-
-var certStorage string
 
 // ExpectedBMCIp is read from config
 var credentialURI string
@@ -56,13 +55,13 @@ var credentialPort string
 var compileURI string
 var compileTCPPort string
 
-//StorageURI is read from config
+// StorageURI is read from config
 var StorageURI string
 
-//StorageTCPPORT is read from config
+// StorageTCPPORT is read from config
 var StorageTCPPORT string
 
-//MaxServerAge is read from config
+// MaxServerAge is read from config
 var MaxServerAge int
 
 type serverProduct struct {
@@ -86,6 +85,7 @@ type serverEntry struct {
 	gitToken        string
 	queue           int
 	expiration      time.Time
+	ReverseProxy    *httputil.ReverseProxy
 	ProductIndex    int
 }
 
@@ -96,7 +96,7 @@ type serversList struct {
 
 var ciServers serversList
 
-//Initialize the config variables
+// Initialize the config variables
 func initServerconfig() error {
 	viper.SetConfigName("gatewayconf")
 	viper.SetConfigType("yaml")
@@ -129,8 +129,6 @@ func initServerconfig() error {
 
 	//TTYDOSLoader set from config file
 	TTYDOSLoader = viper.GetString("TTYD_OS_LOADER")
-
-	certStorage = viper.GetString("CERT_STORAGE")
 
 	credentialURI = viper.GetString("CREDENTIALS_URI")
 	credentialPort = viper.GetString("CREDENTIALS_TCPPORT")
@@ -339,6 +337,26 @@ func home(w http.ResponseWriter, r *http.Request) {
 			base.Zlog.Fatalf("JSON encoding error: %s", err.Error())
 		}
 		w.Write([]byte(returnData))
+
+	case "get_private_key":
+		priv_key_file := viper.GetString("CUSTOMER_PRIVATE_KEY")
+		returnData, err := ioutil.ReadFile(priv_key_file)
+		if err != nil {
+			base.Zlog.Fatalf("ReadFile error: %s", err.Error())
+		}
+
+		//Scrape file name type
+		priv_key_file_type := filepath.Base(priv_key_file)
+
+		//if read successfully, record user information
+		base.Zlog.Infof("get_private_key: %s - %s %s %s", r.RemoteAddr, r.Proto, r.Method, r.URL.RequestURI())
+
+		//Set the response writer header to Content-Disposition to signify that the writer should initiate a download
+		w.Header().Set("Content-Disposition", "attachment; filename="+priv_key_file_type)
+
+		//Tell response writer to send the requester the file data in question
+		w.Write([]byte(returnData))
+
 	case "get_server":
 		base.Zlog.Infof("get_server: %s - %s %s %s", r.RemoteAddr, r.Proto, r.Method, r.URL.RequestURI())
 		var serverTypeIndex int
@@ -614,6 +632,21 @@ func home(w http.ResponseWriter, r *http.Request) {
 		}
 	case "power_on":
 		if cacheIndex != -1 {
+			bmcIP := ciServers.servers[cacheIndex].bmcIP
+			url, _ := url.Parse("https://" + bmcIP + ":443")
+			ciServers.servers[cacheIndex].ReverseProxy = httputil.NewSingleHostReverseProxy(url)
+			var InsecureTransport http.RoundTripper = &http.Transport{
+				Dial: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).Dial,
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				TLSHandshakeTimeout: 10 * time.Second,
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+			}
+			// Our OpenBMC has a self signed certificate
+			ciServers.servers[cacheIndex].ReverseProxy.Transport = InsecureTransport
 			//fmt.Printf("Poweron request\n")
 			base.Zlog.Infof("Poweron request")
 			client := &http.Client{}
@@ -873,6 +906,7 @@ func bmcweb(w http.ResponseWriter, r *http.Request) {
 	// to the homepage !
 
 	bmcIP := ""
+	cacheIndex := -1
 	if err == nil {
 		if cookie.Value != "" {
 			// We must get the IP address from the cache
@@ -881,6 +915,7 @@ func bmcweb(w http.ResponseWriter, r *http.Request) {
 					if time.Now().Before(ciServers.servers[i].expiration) {
 						// We still own the server and we can go to the BMC
 						bmcIP = ciServers.servers[i].bmcIP
+						cacheIndex = i
 					}
 				}
 			}
@@ -913,22 +948,10 @@ func bmcweb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.Close()
-	// Must specify the iLo Web address
-	url, _ := url.Parse("https://" + bmcIP + ":443")
-	proxy := httputil.NewSingleHostReverseProxy(url)
-	var InsecureTransport http.RoundTripper = &http.Transport{
-		Dial: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).Dial,
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-	// Our OpenBMC has a self signed certificate
-	proxy.Transport = InsecureTransport
+	proxy := ciServers.servers[cacheIndex].ReverseProxy
 	// Internal gateway IP address
 	// Must reroute on myself and port 443
-	url, _ = url.Parse("http://" + r.Header.Get("Host"))
+	url, _ := url.Parse("http://" + r.Header.Get("Host"))
 	r.URL.Host = "https://" + url.Hostname() + ":443/"
 	r.Header.Set("X-Forwarded-Host", r.Header.Get("Host"))
 	proxy.ServeHTTP(w, r)
@@ -1045,7 +1068,7 @@ func testweb(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-//Default Intialize
+// Default Intialize
 func init() {
 
 	config := base.Configuration{
@@ -1132,11 +1155,12 @@ func main() {
 			servertype := viper.GetString(typetring)
 			fmt.Println("servertype=", servertype)
 			switch servertype {
-			case "DL360_Gen10":
+			case "DL385_GEN11":
 				newEntry.ProductIndex = 0
-			case "DL325_GEN10PLUS":
+			case "DL325_GEN11":
 				newEntry.ProductIndex = 1
-
+			case "RL300_GEN11":
+				newEntry.ProductIndex = 2
 			}
 			ciServers.mux.Lock()
 			ciServers.servers = append(ciServers.servers, newEntry)
@@ -1152,40 +1176,10 @@ func main() {
 		base.Zlog.Warnf("IP filter initialization error: %s", err.Error())
 	}
 
-	if DNSDomain != "" {
-		// if DNS_DOMAIN is set then we run in a production environment
-		// we must get the directory where the certificates will be stored
-		certManager := autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			Cache:      autocert.DirCache(certStorage),
-			HostPolicy: autocert.HostWhitelist(DNSDomain),
-		}
-
-		server := &http.Server{
-			Addr:         ":443",
-			Handler:      mux,
-			ReadTimeout:  600 * time.Second,
-			WriteTimeout: 600 * time.Second,
-			IdleTimeout:  120 * time.Second,
-			TLSConfig: &tls.Config{
-				GetCertificate: certManager.GetCertificate,
-			},
-		}
-
-		go func() {
-			h := certManager.HTTPHandler(nil)
-			if err := http.ListenAndServe(":http", h); err != http.ErrServerClosed {
-				base.Zlog.Fatalf("Server service error: %s", err.Error())
-			}
-		}()
-
-		server.ListenAndServeTLS("", "")
-	} else {
-		go http.ListenAndServe(":80", http.HandlerFunc(httpsRedirect))
-		// Launch TLS server
-		err := http.ListenAndServeTLS(":443", tlsCertPath, tlsKeyPath, mux)
-		if err != nil {
-			base.Zlog.Fatalf("Server TLS error: %s", err.Error())
-		}
+	go http.ListenAndServe(":80", http.HandlerFunc(httpsRedirect))
+	// Launch TLS server
+	err = http.ListenAndServeTLS(":443", tlsCertPath, tlsKeyPath, mux)
+	if err != nil {
+		base.Zlog.Fatalf("Server TLS error: %s", err.Error())
 	}
 }
